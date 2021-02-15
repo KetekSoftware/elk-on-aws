@@ -1,0 +1,199 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  AWSAccountId:
+    Type: String
+    Description: AWS Account ID
+  SubnetId:
+    Type: 'List<AWS::EC2::Subnet::Id>'
+    Description: Select at least two subnets in your selected VPC.
+  BaseStackName:
+    Description: Please provide the base stack name
+    Type: String
+    Default: elastic-ecs
+  ESVersion:
+    Type: String
+    Description: Version of Elasticsearch and Kibana i.e. 6.5.4
+  ESInstanceCount:
+    Type: Number
+    Description: Maximum number of Elasticsearch containers to launch in your ECS cluster
+
+Resources:
+
+  Service:
+    Type: 'AWS::ECS::Service'
+    DependsOn: ESLBListener
+    Properties:
+      Cluster:
+        Fn::ImportValue: !Sub "${BaseStackName}-Cluster"
+      DesiredCount: !Ref ESInstanceCount
+      LoadBalancers:
+        - ContainerName: elasticsearch
+          ContainerPort: '9200'
+          TargetGroupArn: !Ref ESTG
+      Role:
+        Fn::ImportValue: !Sub "${BaseStackName}-ServiceRole"
+      TaskDefinition: !Ref TaskDefinition
+      PlacementConstraints:
+        - Type: distinctInstance
+
+  TaskDefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      Family: !Join 
+        - ''
+        - - !Ref 'AWS::StackName'
+          - ''
+      Volumes:
+        - Name: esdata
+          Host:
+            SourcePath: /usr/share/elasticsearch/data
+      ContainerDefinitions:
+        - Name: elasticsearch
+          DockerLabels:
+            Owner: Platform
+            Application: ElasticSearch
+          Essential: 'true'
+          Image: !Join 
+            - ''
+            - - !Ref AWSAccountId
+              - .dkr.ecr.
+              - !Ref 'AWS::Region'
+              - '.amazonaws.com/elastic/es:'
+              - !Ref ESVersion
+          MemoryReservation: '10400'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: 
+                Fn::ImportValue: !Sub "${BaseStackName}-CloudwatchLogsGroup"
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: es
+          MountPoints:
+            - SourceVolume: esdata
+              ContainerPath: /usr/share/elasticsearch/data
+              ReadOnly: false
+          PortMappings:
+            - ContainerPort: 9200
+              HostPort: 9200
+            - ContainerPort: 9300
+              HostPort: 9300
+          Environment:
+            - Name: ES_JAVA_OPTS
+              Value: '-Xms5g -Xmx5g'
+            - Name: REGION
+              Value: !Ref 'AWS::Region'
+            - Name: node.data
+              Value: true
+            - Name: node.master
+              Value: true
+            - Name: cluster.name
+              Value: mycluster
+          Ulimits:
+            - Name: nofile
+              SoftLimit: 65536
+              HardLimit: 65536
+
+  # This security group defines who/where is allowed to access the Application Load Balancer.
+  # By default, we've opened this up to the public internet (0.0.0.0/0) but can you restrict
+  # it further if you want.
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      VpcId:
+        Fn::ImportValue: !Sub "${BaseStackName}-VpcId"
+      GroupDescription: Access to the load balancer that sits in front of Elasticsearch service
+      Tags: 
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-LB
+
+  AccessForLBToHosts:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId:
+        Fn::ImportValue: !Sub "${BaseStackName}-SecurityGroup"
+      IpProtocol: tcp
+      FromPort: '9200'
+      ToPort: '9200'
+      SourceSecurityGroupId: !Ref SecurityGroup
+
+  ESLB:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Type: application
+      Subnets: !Ref SubnetId
+      SecurityGroups:
+        - !Ref SecurityGroup
+      Tags: 
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-alb
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '30'
+
+  ESLBListener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ESTG
+      LoadBalancerArn: !Ref ESLB
+      Port: '80'
+      Protocol: HTTP
+
+  ESLBListenerRule:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    DependsOn: ESLBListener
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ESTG
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - /
+      ListenerArn: !Ref ESLBListener
+      Priority: 1
+
+  ESTG:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    DependsOn: ESLB
+    Properties:
+      Name: !Join
+        - '-'
+        - - 'ESTG'
+          - !Select [ 2, !Split [ '-', !GetAtt ESLB.LoadBalancerName]]
+      HealthCheckIntervalSeconds: 60
+      HealthCheckPath: /_cat/health
+      HealthCheckProtocol: HTTPS
+      HealthCheckTimeoutSeconds: 30
+      HealthyThresholdCount: 2
+      Matcher:
+        HttpCode: 401
+      Port: 9200
+      Protocol: HTTPS
+      UnhealthyThresholdCount: 4
+      VpcId: 
+        Fn::ImportValue: !Sub "${BaseStackName}-VpcId"
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: 30
+
+Outputs:
+  Service:
+    Value: !Ref Service
+
+  estaskdef:
+    Value: !Ref TaskDefinition
+
+  LoadBalancerUrl:
+    Description: The URL of the Application Load Balancer
+    Value: !GetAtt ESLB.DNSName
+    Export:
+      Name: !Sub "${AWS::StackName}-LoadBalancerUrl"
+
+  LoadBalancer:
+    Description: A reference to the Application Load Balancer
+    Value: !Ref ESLB
+    Export:
+        Name: !Sub "${AWS::StackName}-LoadBalancer"

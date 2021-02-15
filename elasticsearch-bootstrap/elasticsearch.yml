@@ -1,0 +1,70 @@
+cluster:
+  name: elastic
+  routing.allocation.awareness.attributes: aws_availability_zone
+  routing.allocation.disk.threshold_enabled: false
+  max_shards_per_node: 5100
+  initial_master_nodes:
+    - election_node
+
+node:
+  name: election_node
+  data: true
+  master: true
+  max_local_storage_nodes: 1
+
+network:
+  host: 0.0.0.0
+  publish_host: _ec2:privateIp_
+transport:
+  publish_host: _ec2:privateIp_
+
+discovery:
+  seed_providers: ec2
+  ec2:
+    tag.ElasticSearch: es
+    endpoint: ec2.${REGION}.amazonaws.com
+    host_type: private_ip
+    any_group: true
+
+bootstrap.memory_lock: false
+
+s3:
+  client.default.endpoint: s3.${REGION}.amazonaws.com
+
+cloud:
+  node.auto_attributes: true
+
+action:
+  destructive_requires_name: true
+
+thread_pool:
+    search:
+        queue_size: 10000
+
+# OpenDistro
+opendistro_security:
+  ssl.transport.pemcert_filepath: esnode.pem
+  ssl.transport.pemkey_filepath: esnode-key.pem
+  ssl.transport.pemtrustedcas_filepath: root-ca.pem
+  ssl.transport.enforce_hostname_verification: false
+  ssl.http.enabled: true
+  ssl.http.pemcert_filepath: esnode.pem
+  ssl.http.pemkey_filepath: esnode-key.pem
+  ssl.http.pemtrustedcas_filepath: root-ca.pem
+  allow_unsafe_democertificates: true
+  allow_default_init_securityindex: true
+  authcz.admin_dn:
+    - CN=kirk,OU=client,O=client,L=test, C=de
+
+  audit.type: internal_elasticsearch
+  enable_snapshot_restore_privilege: true
+  check_snapshot_restore_write_privileges: true
+  restapi.roles_enabled: ["all_access", "security_rest_api_access"]
+
+
+# XPack
+# xpack:
+#   security.enabled: false
+#   ml.enabled: false
+#   graph.enabled: false
+#   watcher.enabled: false

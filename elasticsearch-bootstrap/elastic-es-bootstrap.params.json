@@ -1,0 +1,22 @@
+[
+    {
+      "ParameterKey": "AWSAccountId",
+      "ParameterValue": "THE_AWS_ACCOUNT_ID"
+    },
+    {
+      "ParameterKey": "SubnetId",
+      "ParameterValue": "subnet-1,subnet-2,subnet-3"
+    },
+    {
+      "ParameterKey": "BaseStackName",
+      "ParameterValue": "elastic-ecs"
+    },
+    {
+      "ParameterKey": "ESVersion",
+      "ParameterValue": "7.10.0"
+    },
+    {
+      "ParameterKey": "ESInstanceCount",
+      "ParameterValue": "1"
+    }
+  ]

@@ -1,0 +1,134 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  AWSAccountId:
+    Type: String
+    Description: AWS Account ID
+  BaseStackName:
+    Description: Please provide the base stack name
+    Type: String
+    Default: elastic-ecs-core
+  ESVersion:
+    Type: String
+    Description: Version of Elasticsearch and Kibana i.e. 6.5.4
+  ESInstanceCount:
+    Type: Number
+    Description: Maximum number of Elasticsearch containers to launch in your ECS cluster
+
+Resources:
+
+  Service:
+    Type: 'AWS::ECS::Service'
+    # DependsOn: ESALBListener
+    Properties:
+      Cluster:
+        Fn::ImportValue: !Sub "${BaseStackName}-Cluster"
+      DesiredCount: !Ref ESInstanceCount
+      # LoadBalancers:
+      #   - ContainerName: elasticsearch
+      #     ContainerPort: '9200'
+      #     TargetGroupArn: !Ref ESSTG
+      #Role:
+      #  Fn::ImportValue: !Sub "${BaseStackName}-ECSServiceRole"
+      TaskDefinition: !Ref TaskDefinition
+
+  TaskDefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      Family: !Join 
+        - ''
+        - - !Ref 'AWS::StackName'
+          - ''
+      Volumes:
+        - Name: esdata
+          Host:
+            SourcePath: /usr/share/elasticsearch/data
+      ContainerDefinitions:
+        - Name: elasticsearch
+          DockerLabels:
+            Owner: Platform
+            Application: ElasticSearch
+          Essential: 'true'
+          Image: !Join 
+            - ''
+            - - !Ref AWSAccountId
+              - .dkr.ecr.
+              - !Ref 'AWS::Region'
+              - '.amazonaws.com/elastic/es:'
+              - !Ref ESVersion
+              - '-bootstrap'
+          MemoryReservation: '10400'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: 
+                Fn::ImportValue: !Sub "${BaseStackName}-CloudwatchLogsGroup"
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: es
+          MountPoints:
+            - SourceVolume: esdata
+              ContainerPath: /usr/share/elasticsearch/data
+              ReadOnly: false
+          PortMappings:
+            - ContainerPort: 9200
+              HostPort: 9200
+            - ContainerPort: 9300
+              HostPort: 9300
+          Environment:
+            - Name: ES_JAVA_OPTS
+              Value: '-Xms5g -Xmx5g'
+            - Name: REGION
+              Value: !Ref 'AWS::Region'
+            - Name: node.name
+              Value: bootstrap_election_node
+            - Name: cluster.initial_master_nodes
+              Value: bootstrap_election_node
+            - Name: node.data
+              Value: true
+            - Name: node.master
+              Value: true
+            - Name: cluster.name
+              Value: mycluster
+          Ulimits:
+            - Name: nofile
+              SoftLimit: 65536
+              HardLimit: 65536
+
+  ServiceScalingTarget:
+    Type: 'AWS::ApplicationAutoScaling::ScalableTarget'
+    DependsOn: Service
+    Properties:
+      MaxCapacity: !Ref ESInstanceCount
+      MinCapacity: !Ref ESInstanceCount
+      ResourceId: !Join 
+        - ''
+        - - service/
+          - Fn::ImportValue: !Sub "${BaseStackName}-Cluster"
+          - /
+          - !GetAtt 
+            - Service
+            - Name
+      RoleARN: 
+        Fn::ImportValue: !Sub "${BaseStackName}-AutoscalingRoleArn"
+      ScalableDimension: 'ecs:service:DesiredCount'
+      ServiceNamespace: ecs
+
+  ServiceScalingPolicy:
+    Type: 'AWS::ApplicationAutoScaling::ScalingPolicy'
+    Properties:
+      PolicyName: AStepPolicy
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref ServiceScalingTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: PercentChangeInCapacity
+        Cooldown: 60
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalLowerBound: 0
+            ScalingAdjustment: 100
+
+Outputs:
+  Service:
+    Value: !Ref Service
+  estaskdef:
+    Value: !Ref TaskDefinition

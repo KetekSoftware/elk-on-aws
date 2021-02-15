@@ -1,0 +1,18 @@
+[
+    {
+      "ParameterKey": "AWSAccountId",
+      "ParameterValue": "THE_AWS_ACCOUNT_ID"
+    },
+    {
+      "ParameterKey": "BaseStackName",
+      "ParameterValue": "elastic-ecs"
+    },
+    {
+      "ParameterKey": "LogstashVersion",
+      "ParameterValue": "7.10.0"
+    },
+    {
+      "ParameterKey": "LogstashInstanceCount",
+      "ParameterValue": "1"
+    }
+  ]

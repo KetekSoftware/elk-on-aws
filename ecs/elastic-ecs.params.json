@@ -1,0 +1,30 @@
+[
+    {
+      "ParameterKey": "KeyName",
+      "ParameterValue": "KEY_NAME"
+    },
+    {
+      "ParameterKey": "VpcId",
+      "ParameterValue": "VPC-ID"
+    },
+    {
+      "ParameterKey": "SubnetId",
+      "ParameterValue": "subnet-1,subnet-2,subnet-3"
+    },
+    {
+      "ParameterKey": "MaxSize",
+      "ParameterValue": "2"
+    },
+    {
+      "ParameterKey": "MinSize",
+      "ParameterValue": "2"
+    },
+    {
+      "ParameterKey": "DesiredCapacity",
+      "ParameterValue": "2"
+    },
+    {
+      "ParameterKey": "InstanceType",
+      "ParameterValue": "t3.xlarge"
+    }
+  ]

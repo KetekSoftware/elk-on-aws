@@ -1,0 +1,105 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  AWSAccountId:
+    Type: String
+    Description: AWS Account ID
+  BaseStackName:
+    Description: Please provide the base stack name
+    Type: String
+    Default: elastic-ecs
+  LogstashVersion:
+    Type: String
+    Description: Version of Elasticsearch and Logstash i.e. 6.5.4
+  LogstashInstanceCount:
+    Type: Number
+    Description: Maximum number of Logstash containers to launch in your ECS cluster
+
+Resources:
+
+  Service:
+    Type: 'AWS::ECS::Service'
+    Properties:
+      Cluster:
+        Fn::ImportValue: !Sub "${BaseStackName}-Cluster"
+      DesiredCount: !Ref LogstashInstanceCount
+      TaskDefinition: !Ref TaskDefinition
+      PlacementConstraints:
+        - Type: distinctInstance
+
+  TaskDefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      Family: !Join 
+        - ''
+        - - !Ref 'AWS::StackName'
+          - ''
+      ContainerDefinitions:
+        - Name: logstash
+          DockerLabels:
+            Owner: Platform
+            Application: Logstash
+          Essential: 'true'
+          Image: !Join 
+            - ''
+            - - !Ref AWSAccountId
+              - .dkr.ecr.
+              - !Ref 'AWS::Region'
+              - '.amazonaws.com/elastic/logstash:'
+              - !Ref LogstashVersion
+          MemoryReservation: '3000'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: 
+                Fn::ImportValue: !Sub "${BaseStackName}-CloudwatchLogsGroup"
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: logstash
+          PortMappings:
+            - ContainerPort: 5000
+              HostPort: 5000
+            - ContainerPort: 5044
+              HostPort: 5044
+            - ContainerPort: 9600
+              HostPort: 9600
+          Environment:
+            - Name: ES_JAVA_OPTS
+              Value: '-Xms2000m -Xmx2000m'
+  
+  ServiceScalingTarget:
+    Type: 'AWS::ApplicationAutoScaling::ScalableTarget'
+    DependsOn: Service
+    Properties:
+      MaxCapacity: !Ref LogstashInstanceCount
+      MinCapacity: !Ref LogstashInstanceCount
+      ResourceId: !Join 
+        - ''
+        - - service/
+          - Fn::ImportValue: !Sub "${BaseStackName}-Cluster"
+          - /
+          - !GetAtt 
+            - Service
+            - Name
+      RoleARN: 
+        Fn::ImportValue: !Sub "${BaseStackName}-AutoscalingRoleArn"
+      ScalableDimension: 'ecs:service:DesiredCount'
+      ServiceNamespace: ecs
+
+  ServiceScalingPolicy:
+    Type: 'AWS::ApplicationAutoScaling::ScalingPolicy'
+    Properties:
+      PolicyName: AStepPolicy
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref ServiceScalingTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: PercentChangeInCapacity
+        Cooldown: 60
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalLowerBound: 0
+            ScalingAdjustment: 200
+
+Outputs:
+  Service:
+    Value: !Ref Service
+  LogstashTaskDef:
+    Value: !Ref TaskDefinition

@@ -1,0 +1,349 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  KeyName:
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the ECS instances.
+  VpcId:
+    Type: 'AWS::EC2::VPC::Id'
+    Description: Select a VPC that allows instances to access the Internet.
+  SubnetId:
+    Type: 'List<AWS::EC2::Subnet::Id>'
+    Description: Select at least two subnets in your selected VPC.
+  MaxSize:
+    Type: Number
+    Description: Maximum number of instances that can be launched in your ECS cluster.
+  MinSize:
+    Type: Number
+    Description: Minimum number of instances that can be launched in your ECS cluster.
+  DesiredCapacity:
+    Type: Number
+    Description: The desired capacity of instances.
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    AllowedValues:
+      - t3.xlarge
+    ConstraintDescription: Please choose a valid instance type.
+
+Resources:
+  Cluster:
+    Type: 'AWS::ECS::Cluster'
+
+  SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Elastic ECS Security Group for EC2 Hosts
+      VpcId: !Ref VpcId
+      Tags: 
+        - Key: Name
+          Value: !Sub ${AWS::StackName}
+
+  SecurityGroupSSHinbound:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref SecurityGroup
+      IpProtocol: tcp
+      FromPort: '22'
+      ToPort: '22'
+      CidrIp: 0.0.0.0/0
+
+  SecurityGroupALLPorts:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref SecurityGroup
+      IpProtocol: '-1'
+      FromPort: '-1'
+      ToPort: '-1'
+      SourceSecurityGroupId: !Ref SecurityGroup
+
+  CloudwatchLogsGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Join
+        - ''
+        - - '/aws/ecs/'
+          - !Ref Cluster
+      RetentionInDays: 14
+
+  EC2Role:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: ecs-service
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ecs:CreateCluster'
+                  - 'ecs:DeregisterContainerInstance'
+                  - 'ecs:DiscoverPollEndpoint'
+                  - 'ecs:Poll'
+                  - 'ecs:RegisterContainerInstance'
+                  - 'ecs:StartTelemetrySession'
+                  - 'ecs:Submit*'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'ecr:GetAuthorizationToken'
+                  - 'ecr:BatchCheckLayerAvailability'
+                  - 'ecr:GetDownloadUrlForLayer'
+                  - 'ecr:GetRepositoryPolicy'
+                  - 'ecr:DescribeRepositories'
+                  - 'ecr:ListImages'
+                  - 'ecr:DescribeImages'
+                  - 'ecr:BatchGetImage'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'ec2:DescribeAvailabilityZones'
+                  - 'ec2:DescribeInstanceAttribute'
+                  - 'ec2:DescribeInstances'
+                  - 'ec2:DescribeRegions'
+                  - 'ec2:DescribeSecurityGroups'
+                  - 'ec2:DescribeTags'
+                Resource: '*'
+
+  AutoScalingGroup4:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      VPCZoneIdentifier: !Ref SubnetId
+      LaunchConfigurationName: !Ref LaunchConfiguration4
+      MinSize: !Ref MinSize
+      MaxSize: !Ref MaxSize
+      DesiredCapacity: !Ref DesiredCapacity
+      Tags:
+        - Key: Name
+          Value: !Ref Cluster
+          PropagateAtLaunch: 'true'
+        - Key: ElasticSearch
+          Value: es
+          PropagateAtLaunch: 'true'
+        - Key: env
+          Value: dev
+          PropagateAtLaunch: 'true'
+        - Key: Backup
+          Value: 'Yes'
+          PropagateAtLaunch: 'true'
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: 'true'
+
+  LaunchConfiguration4:
+    Type: 'AWS::AutoScaling::LaunchConfiguration'
+    Properties:
+      ImageId: ami-0c1c0191392d93c6a
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: io1
+            Iops: '3000'
+            DeleteOnTermination: 'true'
+            VolumeSize: '600'
+      SecurityGroups:
+        - !Ref SecurityGroup
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      KeyName: !Ref KeyName
+      UserData: 
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              #!/bin/bash
+              Content-Type: multipart/mixed; boundary="==BOUNDARY=="
+              MIME-Version: 1.0
+
+              --==BOUNDARY==
+              Content-Type: text/cloud-boothook; charset="us-ascii"
+
+              # Set Docker daemon options
+              cloud-init-per once docker_options echo 'OPTIONS="${!OPTIONS} --storage-opt dm.basesize=600G"' >> /etc/sysconfig/docker
+
+              --==BOUNDARY==
+              MIME-Version: 1.0
+              Content-Type: text/x-shellscript; charset="us-ascii"
+              
+              # Set the ECS agent configuration options
+              echo ECS_CLUSTER=${ClusterName} >> /etc/ecs/ecs.config
+              echo ECS_RESERVED_MEMORY=256 >> /etc/ecs/ecs.config
+
+              yum install -y aws-cfn-bootstrap
+
+              /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource AutoScalingGroup4 --region ${AWS::Region}
+
+              sysctl -w vm.max_map_count=262144
+
+              mkdir -p /usr/share/elasticsearch/data/
+
+              chown -R 1000.1000 /usr/share/elasticsearch/data/
+
+              mkdir -p /usr/share/elasticsearch/data-bootstrap/
+
+              chown -R 1000.1000 /usr/share/elasticsearch/data-bootstrap/
+
+              --==BOUNDARY==--
+            - ClusterName: !Ref Cluster
+        # Previous configuration (using Fn::Join instead of Fn::Sub):
+        # removed -xe from !/bin/bash because the sript was failing: https://stackoverflow.com/questions/23818209/user-data-scripts-fails-without-giving-reason
+        # !Base64 
+        #   'Fn::Join':
+        #     - ''
+        #     - - |
+        #         #!/bin/bash
+        #       - echo ECS_CLUSTER=
+        #       - !Ref Cluster
+        #       - |2
+        #         >> /etc/ecs/ecs.config
+        #       - |
+        #         echo ECS_RESERVED_MEMORY=256 >> /etc/ecs/ecs.config
+        #       - |
+        #         yum install -y aws-cfn-bootstrap
+        #       - '/opt/aws/bin/cfn-signal -e $? '
+        #       - ' --stack '
+        #       - !Ref 'AWS::StackName'
+        #       - ' --resource AutoScalingGroup2 '
+        #       - ' --region '
+        #       - !Ref 'AWS::Region'
+        #       - |+
+
+        #       - >
+        #         cloud-init-per once docker_options echo 'OPTIONS="${OPTIONS} --storage-opt dm.basesize=500G"' >>
+        #         /etc/sysconfig/docker
+        #       - |
+        #         service docker restart
+        #       - |
+        #         sysctl -w vm.max_map_count=262144
+        #       - |
+        #         mkdir -p /usr/share/elasticsearch/data/
+        #       - |
+        #         chown -R 1000.1000 /usr/share/elasticsearch/data/
+        #       - |
+        #         mkdir -p /usr/share/elasticsearch/data-bootstrap/
+        #       - |
+        #         chown -R 1000.1000 /usr/share/elasticsearch/data-bootstrap/
+        #- |
+        #  echo export ECS_RESERVED_MEMORY="256" >> /etc/profile
+        # does not work: https://medium.com/@nikhilkashyap4/enabling-scale-in-protection-for-instances-launched-by-auto-scaling-group-using-aws-cloud-formation-85bf4e4ce128
+        # because AutoScalingGroup is created after the launch configuration, therefore, we don't have it's name here
+        #- |
+        #  instanceID=$(curl 169.254.169.254/latest/meta-data/instance-id)
+        #- |
+        #  sleep 10
+        #- |
+        #  # set instance protection
+        #- 'aws autoscaling set-instance-protection --instance-ids $instanceID'
+        #- ' --auto-scaling-group-name '
+        #- !Ref AutoScalingGroup
+        #- ' --resource AutoScalingGroup '
+        #- ' --region '
+        #- !Ref 'AWS::Region'
+        #- ' --protected-from-scale-in'
+        # - |+
+
+  ServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: ecs-service
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'elasticloadbalancing:DeregisterInstancesFromLoadBalancer'
+                  - 'elasticloadbalancing:DeregisterTargets'
+                  - 'elasticloadbalancing:Describe*'
+                  - 'elasticloadbalancing:RegisterInstancesWithLoadBalancer'
+                  - 'elasticloadbalancing:RegisterTargets'
+                  - 'ec2:Describe*'
+                  - 'ec2:AuthorizeSecurityGroupIngress'
+                Resource: '*'
+
+  AutoscalingRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - application-autoscaling.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: service-autoscaling
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'application-autoscaling:*'
+                  - 'cloudwatch:DescribeAlarms'
+                  - 'cloudwatch:PutMetricAlarm'
+                  - 'ecs:DescribeServices'
+                  - 'ecs:UpdateService'
+                Resource: '*'
+  EC2InstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref EC2Role
+Outputs:
+  Cluster:
+    Description: A reference to the ECS cluster
+    Value: !Ref Cluster
+    Export:
+      Name: !Sub "${AWS::StackName}-Cluster"
+
+  ServiceRole:
+    Description: A reference to the service role
+    Value: !Ref ServiceRole
+    Export:
+      Name: !Sub "${AWS::StackName}-ServiceRole"
+
+  VpcId:
+    Description: A reference to the selected VpcId
+    Value: !Ref VpcId
+    Export:
+      Name: !Sub "${AWS::StackName}-VpcId"
+
+  SecurityGroup:
+    Description: A reference to the security Group
+    Value: !Ref SecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-SecurityGroup"
+
+  CloudwatchLogsGroup:
+    Description: A reference to the CloudwatchLogsGroup
+    Value: !Ref CloudwatchLogsGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-CloudwatchLogsGroup"
+
+  AutoscalingRoleArn:
+    Description: A reference to the AutoscalingRoleArn
+    Value: !GetAtt AutoscalingRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-AutoscalingRoleArn"
+  

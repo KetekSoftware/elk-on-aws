@@ -1,0 +1,108 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  AWSAccountId:
+    Type: String
+    Description: AWS Account ID
+  AWSECRAdminUser:
+    Type: String
+    Description: Admin User who can push ECR images
+Resources:
+  ESRepository:
+    Type: 'AWS::ECR::Repository'
+    Properties:
+      RepositoryName: elastic/es
+      RepositoryPolicyText:
+        Version: 2008-10-17
+        Statement:
+          - Sid: AllowPushPull
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Join 
+                  - ''
+                  - - 'arn:aws:iam::'
+                    - !Ref AWSAccountId
+                    - ':user/'
+                    - !Ref AWSECRAdminUser
+            Action:
+              - 'ecr:GetDownloadUrlForLayer'
+              - 'ecr:BatchGetImage'
+              - 'ecr:BatchCheckLayerAvailability'
+              - 'ecr:PutImage'
+              - 'ecr:InitiateLayerUpload'
+              - 'ecr:UploadLayerPart'
+              - 'ecr:CompleteLayerUpload'
+  KibanaRepository:
+    Type: 'AWS::ECR::Repository'
+    Properties:
+      RepositoryName: elastic/kibana
+      RepositoryPolicyText:
+        Version: 2008-10-17
+        Statement:
+          - Sid: AllowPushPull
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Join 
+                  - ''
+                  - - 'arn:aws:iam::'
+                    - !Ref AWSAccountId
+                    - ':user/'
+                    - !Ref AWSECRAdminUser
+            Action:
+              - 'ecr:GetDownloadUrlForLayer'
+              - 'ecr:BatchGetImage'
+              - 'ecr:BatchCheckLayerAvailability'
+              - 'ecr:PutImage'
+              - 'ecr:InitiateLayerUpload'
+              - 'ecr:UploadLayerPart'
+              - 'ecr:CompleteLayerUpload'
+            
+  LogstashRepository:
+    Type: 'AWS::ECR::Repository'
+    Properties:
+      RepositoryName: elastic/logstash
+      RepositoryPolicyText:
+        Version: 2008-10-17
+        Statement:
+          - Sid: AllowPushPull
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Join 
+                  - ''
+                  - - 'arn:aws:iam::'
+                    - !Ref AWSAccountId
+                    - ':user/'
+                    - !Ref AWSECRAdminUser
+            Action:
+              - 'ecr:GetDownloadUrlForLayer'
+              - 'ecr:BatchGetImage'
+              - 'ecr:BatchCheckLayerAvailability'
+              - 'ecr:PutImage'
+              - 'ecr:InitiateLayerUpload'
+              - 'ecr:UploadLayerPart'
+              - 'ecr:CompleteLayerUpload'
+Outputs:
+  ESECRArn:
+    Description: Your ES ECR Repository ARN
+    Value: !Join 
+      - ''
+      - - !GetAtt 
+          - ESRepository
+          - Arn
+  KibanaECRArn:
+    Description: Your Kibana ECR Repository ARN
+    Value: !Join 
+      - ''
+      - - !GetAtt 
+          - KibanaRepository
+          - Arn
+
+  LogstashECRArn:
+    Description: Your Logstash ECR Repository ARN
+    Value: !Join 
+      - ''
+      - - !GetAtt 
+          - LogstashRepository
+          - Arn

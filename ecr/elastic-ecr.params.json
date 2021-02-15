@@ -1,0 +1,10 @@
+[
+    {
+      "ParameterKey": "AWSAccountId",
+      "ParameterValue": "THE_AWS_ACCOUNT_ID"
+    },
+    {
+      "ParameterKey": "AWSECRAdminUser",
+      "ParameterValue": "user.admin"
+    }
+  ]

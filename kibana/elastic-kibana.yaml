@@ -1,0 +1,305 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  AWSAccountId:
+    Type: String
+    Description: AWS Account ID
+  SubnetId:
+    Type: 'List<AWS::EC2::Subnet::Id>'
+    Description: Select at least two subnets in your selected VPC.
+  BaseStackName:
+    Description: Please provide the base stack name
+    Type: String
+    Default: elastic-ecs
+  # Route53HostedZoneName:
+  #   Type: String
+  #   Description: Route53 Hosted Zone Name
+  KibanaVersion:
+    Type: String
+    Description: Version of Elasticsearch and Kibana i.e. 6.5.4
+  KibanaInstanceCount:
+    Type: Number
+    Description: Maximum number of Kibana containers to launch in your ECS cluster
+  ESStackName:
+    Description: Please provide the elasticsearch stack name
+    Type: String
+    Default: elastic-master
+
+Resources:
+
+  Service:
+    Type: 'AWS::ECS::Service'
+    DependsOn: KBLBListener
+    Properties:
+      Cluster:
+        Fn::ImportValue: !Sub "${BaseStackName}-Cluster"
+      DesiredCount: !Ref KibanaInstanceCount
+      LoadBalancers:
+        - ContainerName: kibana
+          ContainerPort: '5601'
+          TargetGroupArn: !Ref KBTG
+      Role:
+        Fn::ImportValue: !Sub "${BaseStackName}-ServiceRole"
+      TaskDefinition: !Ref TaskDefinition
+      PlacementConstraints:
+        - Type: distinctInstance
+
+  TaskDefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      Family: !Join 
+        - ''
+        - - !Ref 'AWS::StackName'
+          - ''
+      ContainerDefinitions:
+        - Name: kibana
+          DockerLabels:
+            Owner: Platform
+            Application: Kibana
+          Essential: 'true'
+          Image: !Join 
+            - ''
+            - - !Ref AWSAccountId
+              - .dkr.ecr.
+              - !Ref 'AWS::Region'
+              - '.amazonaws.com/elastic/kibana:'
+              - !Ref KibanaVersion
+          MemoryReservation: '3000'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: 
+                Fn::ImportValue: !Sub "${BaseStackName}-CloudwatchLogsGroup"
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: kibana
+          PortMappings:
+            - ContainerPort: 5601
+              HostPort: 5601
+          Environment:
+            - Name: ELASTICSEARCH_HOSTS
+              Value: "https://ELASTICSEARCH_HOST:9200/"
+
+  # This security group defines who/where is allowed to access the Application Load Balancer.
+  # By default, we've opened this up to the public internet (0.0.0.0/0) but can you restrict
+  # it further if you want.
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      VpcId:
+        Fn::ImportValue: !Sub "${BaseStackName}-VpcId"
+      GroupDescription: Access to the load balancer that sits in front of Kibana service
+      Tags: 
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-LB
+
+  SecurityGroupHTTPinbound:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref SecurityGroup
+      IpProtocol: tcp
+      FromPort: '80'
+      ToPort: '80'
+      CidrIp: 0.0.0.0/0
+
+  SecurityGroupHTTPSinbound:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref SecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+
+  AccessForLBToHosts:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId:
+        Fn::ImportValue: !Sub "${BaseStackName}-SecurityGroup"
+      IpProtocol: tcp
+      FromPort: '5601'
+      ToPort: '5601'
+      SourceSecurityGroupId: !Ref SecurityGroup
+
+  KBLB:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      #Name: KBLB
+      #Scheme: internal
+      Type: application
+      Subnets: !Ref SubnetId
+      SecurityGroups: 
+        - !Ref SecurityGroup
+      Tags: 
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-alb
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '30'
+
+  KBLBListener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    #DependsOn: ECSServiceRole
+    Properties:
+      LoadBalancerArn: !Ref KBLB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+      - Type: redirect
+        RedirectConfig:
+          Protocol: HTTPS
+          Port: 443
+          Host: '#{host}'
+          Path: '/#{path}'
+          Query: '#{query}'
+          StatusCode: HTTP_301
+      # Before Redirecting HTTP to HTTPS
+      # DefaultActions:
+      #   - Type: forward
+      #     TargetGroupArn: !Ref KBTG
+
+  KBLBListener443:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    #DependsOn: ECSServiceRole
+    Properties:
+      LoadBalancerArn: !Ref KBLB
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: THE_CERTIFICATE_ARN
+      SslPolicy: ELBSecurityPolicy-2016-08
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref KBTG
+
+  Listener443Certificate:
+      Type: 'AWS::ElasticLoadBalancingV2::ListenerCertificate'
+      Properties:
+          Certificates:
+              - CertificateArn: THE_CERTIFICATE_ARN
+          ListenerArn: !Ref KBLBListener443
+
+
+  KBLBListener443Rule:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    DependsOn: KBLBListener443
+    Properties:
+      ListenerArn: !Ref KBLBListener443
+      Priority: 1
+      Conditions:
+        - Field: host-header
+          Values: 
+            - THE_DOMAIN
+      Actions:
+        - Type: redirect
+          RedirectConfig:
+            Protocol: HTTPS
+            Port: '#{port}'
+            Host: 'THE_DOMAIN'
+            Path: '/#{path}'
+            Query: '#{query}'
+            StatusCode: HTTP_301
+
+  KBTG:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    DependsOn: KBLB
+    Properties:
+      Name: !Join
+        - '-'
+        - - 'KBTG'
+          - !Select [ 2, !Split [ '-', !GetAtt KBLB.LoadBalancerName]]
+      HealthCheckIntervalSeconds: 60
+      HealthCheckPath: /app/login
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 30
+      HealthyThresholdCount: 2
+      Port: 5601
+      Protocol: HTTP
+      UnhealthyThresholdCount: 4
+      VpcId: 
+        Fn::ImportValue: !Sub "${BaseStackName}-VpcId"
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: 30
+
+  ServiceScalingTarget:
+    Type: 'AWS::ApplicationAutoScaling::ScalableTarget'
+    DependsOn: Service
+    Properties:
+      MaxCapacity: !Ref KibanaInstanceCount
+      MinCapacity: 0
+      ResourceId: !Join 
+        - ''
+        - - service/
+          - Fn::ImportValue: !Sub "${BaseStackName}-Cluster"
+          - /
+          - !GetAtt 
+            - Service
+            - Name
+      RoleARN: 
+        Fn::ImportValue: !Sub "${BaseStackName}-AutoscalingRoleArn"
+      ScalableDimension: 'ecs:service:DesiredCount'
+      ServiceNamespace: ecs
+
+  ServiceScalingPolicy:
+    Type: 'AWS::ApplicationAutoScaling::ScalingPolicy'
+    Properties:
+      PolicyName: AStepPolicy
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref ServiceScalingTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: PercentChangeInCapacity
+        Cooldown: 60
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalLowerBound: 0
+            ScalingAdjustment: 200
+
+  KBLB500sAlarmScaleUp:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      EvaluationPeriods: '1'
+      Statistic: Average
+      Threshold: '10'
+      AlarmDescription: Alarm if our ALB generates too many HTTP 500s.
+      Period: '60'
+      AlarmActions:
+        - !Ref ServiceScalingPolicy
+      Namespace: AWS/ApplicationELB
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt 
+            - KBLB
+            - LoadBalancerFullName
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: HTTPCode_ELB_5XX_Count
+
+  # KBLBRoute53Record:
+  #   Type: 'AWS::Route53::RecordSet'
+  #   Properties:
+  #     HostedZoneName: !Ref Route53HostedZoneName
+  #     Name: !Join 
+  #       - ''
+  #       - - kibana-new.
+  #         - !Ref Route53HostedZoneName
+  #     Type: A
+  #     AliasTarget:
+  #       HostedZoneId: !GetAtt 
+  #         - KBLB
+  #         - CanonicalHostedZoneID
+  #       DNSName: !GetAtt 
+  #         - KBLB
+  #         - DNSName
+  #       EvaluateTargetHealth: 'false'
+
+Outputs:
+  Service:
+    Value: !Ref Service
+  KBLB:
+    Description: Your Kibana ALB DNS URL
+    Value: !Join 
+      - ''
+      - - !GetAtt 
+          - KBLB
+          - DNSName
+  kibanataskdef:
+    Value: !Ref TaskDefinition
